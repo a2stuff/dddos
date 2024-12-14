@@ -1544,8 +1544,8 @@ page_num:       .byte   0       ; page within block (0 or 1)
 buf_ptr:        .addr   0
 
 ;;; Used by TrackSectorToBlockNum
-L3992:  brk
-L3993:  brk
+rwts_track_times_8:  brk
+tmp_sector:  brk
 
 .proc DoWriteBlock
         lda     HIMEM+1
@@ -1575,66 +1575,105 @@ L3993:  brk
 
 .proc TrackSectorToBlockNum
 
-;;; TODO: Document the mapping logic here.
+;;; ProDOS Technical Reference Manual
+;;; Appendix B.5 "DOS 3.3 Disk Organization"
+;;;
+;;; Figure B-15 shows how to determine a block number from a given
+;;; track and sector. First multiply the track number by 8, then add
+;;; the Sector Offset that corresponds to the sector number. The half
+;;; of the block in which the sector resides is determined by the
+;;; Half-of-Block line (1 is the first half; 2 is the second).
+;;;
+;;; Figure B-15. Tracks and Sectors to Blocks
+;;;
+;;;       Block = (8 * Track) + Sector Offset
+;;;
+;;;        Sector : 0 1 2 3 4 5 6 7 8 9 A B C D E F
+;;; Sector Offset : 0 7 6 6 5 5 4 4 3 3 2 2 1 1 0 7
+;;;  Half of Block: 1 1 2 1 2 1 2 1 2 1 2 1 2 1 2 2
 
-        sty     L3993
-        tax
+;;; NOTE: Return value has "Half" in X as 0 or 1, not 1 or 2
+
+;;; NOTE: Most of this code can be replaced by simple lookup tables.
+
+        sty     tmp_sector
+        tax                     ; X = track
         ldy     #$00
-        tya
-L39BF:  dex
-        bmi     L39CA
+        tya                     ; A = 0
+
+        ;; First compute 8 * Track
+        ;; TODO: Replace with a bit shift
+:       dex
+        bmi     :+
         clc
-        adc     #$08
-        bcc     L39BF
+        adc     #8
+        bcc     :-
         iny
-        bne     L39BF
-L39CA:  sta     L3992
-        ldx     #$00
-        lda     L3993
-        bne     L39D8
-        lda     L3992
+        bne     :-
+:
+        sta     rwts_track_times_8
+
+        ;; Y = 0 here
+        ldx     #0              ; page_num = 0 (first half)
+
+        ;; Sector = $0?
+        lda     tmp_sector
+        bne     :+
+        ;; A,Y = Block = (8 * Track) + 0; X = Half-1 = 0
+        lda     rwts_track_times_8
         rts
-
-L39D8:  cmp     #$01
-        bne     L39E6
-        lda     L3992
+:
+        ;; Sector = $1?
+        cmp     #$1
+        bne     not_s1
+        ;; A,Y = Block = (8 * Track) + 7, X = Half-1 = 0
+        lda     rwts_track_times_8
         clc
-        adc     #$07
-        bcc     L39E5
+        adc     #7
+        bcc     :+
         iny
-L39E5:  rts
-
-L39E6:  cmp     #$0E
-        bne     L39EF
-        lda     L3992
+:       rts
+not_s1:
+        ;; Sector = $E?
+        cmp     #$E
+        bne     :+
+        ;; A,Y = Block = (8 * Track) + 0, X = Half-1 = 1
+        lda     rwts_track_times_8
         inx
         rts
-
-L39EF:  cmp     #$0F
-        bne     L39FE
-        lda     L3992
+:
+        ;; Sector = $F?
+        cmp     #$F
+        bne     not_sf
+        ;; A,Y = Block = (8 * Track) + 7, X = Half-1 = 1
+        lda     rwts_track_times_8
         clc
-        adc     #$07
-        bcc     L39FC
+        adc     #7
+        bcc     :+
         iny
-L39FC:  inx
+:       inx
         rts
+not_sf:
 
-L39FE:  lda     L3993
-        lsr     a
-        bcs     L3A09
-        lda     #$0E
-        inx
-        bne     L3A0B
-L3A09:  lda     #$0F
-L3A0B:  sec
-        sbc     L3993
-        lsr     a
+        ;; Sectors $1..$D
+        ;; if even: Offset = (14 - sector) / 2
+        ;; if odd:  Offset = (15 - sector) / 2
+        lda     tmp_sector
+        lsr     a               ; sector / 2
+        bcs     odd             ; sector odd, so Half = 1
+        lda     #14             ; sector even, so Half = 2
+        inx                     ; X = 1 (Half = 2)
+        bne     :+              ; always
+odd:    lda     #15
+:       sec
+        sbc     tmp_sector
+        lsr     a               ; A = Offset
+        ;; A,Y = Block = (8 * Track) + Offset, X = Half-1
         clc
-        adc     L3992
-        bcc     L3A17
+        adc     rwts_track_times_8
+        bcc     :+
         iny
-L3A17:  rts
+:       rts
 .endproc
 
 reloc_end := $3AFF
