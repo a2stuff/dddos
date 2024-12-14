@@ -58,6 +58,9 @@ kDOS33FileTypeRelocatable = $10
 kDOS33FileTypeA         = $20
 kDOS33FileTypeB         = $40
 
+;;; For character literals; sets high bit. (Like scrcode)
+.define scrchar(c) ((c)|$80)
+
 ;;; ============================================================
 ;;; Entry Point
 ;;; ============================================================
@@ -205,7 +208,7 @@ ExternalCommand:
         ldx     #0
 :       lda     INPUT_BUFFER,y
         iny
-        cmp     #' '|$80        ; skip whitespace
+        cmp     #scrchar(' ')   ; skip whitespace
         beq     :-
 
         and     #UPPERCASE_MASK
@@ -225,7 +228,7 @@ dcat_cmd_str:
         ldx     #0
 :       lda     INPUT_BUFFER,y
         iny
-        cmp     #' '|$80        ; skip whitespace
+        cmp     #scrchar(' ')   ; skip whitespace
         beq     :-
 
         and     #UPPERCASE_MASK
@@ -241,7 +244,7 @@ dcat_cmd_str:
         ldx     #0
 :       lda     INPUT_BUFFER,y
         iny
-        cmp     #' '|$80        ; skip whitespace
+        cmp     #scrchar(' ')   ; skip whitespace
         beq     :-
 
         and     #UPPERCASE_MASK
@@ -328,7 +331,7 @@ DCATImpl:
         dey
         bpl     :-
 
-        lda     #' '|$80
+        lda     #scrchar(' ')
         jsr     COUT
         lda     $02             ; volume number
         jsr     PrintByte
@@ -371,10 +374,10 @@ L3205:  cmp     #$FF            ; $FF = entry is deleted
         ;; Locked?
         lda     ($00),y
         bmi     L3217           ; high bit = locked
-        lda     #' '|$80
+        lda     #scrchar(' ')
         jsr     COUT
         jmp     L321C
-L3217:  lda     #'*'|$80
+L3217:  lda     #scrchar('*')
         jsr     COUT
 
         ;; File type
@@ -390,16 +393,16 @@ L321C:  lda     ($00),y
         beq     type_b
         bne     next_file       ; always
 
-type_t: lda     #'T'|$80
+type_t: lda     #scrchar('T')
         bne     :+              ; always
-type_i: lda     #'I'|$80
+type_i: lda     #scrchar('I')
         bne     :+              ; always
-type_a: lda     #'A'|$80
+type_a: lda     #scrchar('A')
         bne     :+              ; always
-type_b: lda     #'B'|$80
+type_b: lda     #scrchar('B')
 :       jsr     COUT
 
-        lda     #' '|$80
+        lda     #scrchar(' ')
         jsr     COUT
 
         ;; Sectors
@@ -409,7 +412,7 @@ type_b: lda     #'B'|$80
         tay
         lda     ($00),y
         jsr     PrintByte
-        lda     #' '|$80
+        lda     #scrchar(' ')
         jsr     COUT
 
         ldy     cur_cat_sector_offset
@@ -482,7 +485,7 @@ sloop:  lda     num
         jmp     sloop
 
 :       pla
-        ora     #'0'|$80
+        ora     #scrchar('0')
         jsr     COUT
         dey
         bpl     dloop
@@ -508,14 +511,14 @@ digits_table:
         iny
         cmp     #$8D            ; CR
         beq     fail
-        cmp     #' '|$80        ; skip whitespace
+        cmp     #scrchar(' ')   ; skip whitespace
         beq     :-
 
         ;; Shuffle filename down to start of buffer
 parse_loop:
         cmp     #$8D            ; CR
         beq     done_name
-        cmp     #','|$80
+        cmp     #scrchar(',')
         beq     done_name
         cmp     #$E0            ; lowercase plane?
         bcc     :+
@@ -628,7 +631,7 @@ possible_match:
         beq     found_match
         iny
         lda     (HIMEM),y
-        cmp     #' '|$80
+        cmp     #scrchar(' ')
         bne     next_entry
         inx
         bne     possible_match
@@ -895,13 +898,13 @@ L353E:  clc
         ldx     #$00
 :       lda     INPUT_BUFFER,y
         iny
-        cmp     #' '|$80
+        cmp     #scrchar(' ')
         beq     :-
         ;; Shuffle filename down to start of buffer
 parse_loop:
-        cmp     #$8D
+        cmp     #$8D            ; CR
         beq     :+
-        cmp     #','|$80
+        cmp     #scrchar(',')
         beq     :+
         sta     INPUT_BUFFER+1,x
         inx
@@ -1311,7 +1314,7 @@ L3846:  cpx     #kDOS33MaxFilenameLen
         lda     ($19),y
         inx
         iny
-        cmp     #' '|$80
+        cmp     #scrchar(' ')
         beq     L3846
 L3852:  pla
         clc
