@@ -10,6 +10,8 @@ TIME            := $BF92
 TIMELO          := $BF92
 TIMEHI          := $BF93
 
+READ_BLOCK      = $80
+WRITE_BLOCK     = $81
 GET_TIME        = $82
 CREATE          = $C0
 SET_FILE_INFO   = $C3
