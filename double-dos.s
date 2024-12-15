@@ -48,7 +48,14 @@ kDOS33FileEntryName     = $03   ; +$03-$20 File name (30 characters)
 kDOS33FileEntryLength   = $21   ; +$21-$22 Length of file in sectors (LO/HI)
 kDOS33FileEntrySize     = $23   ; Size of each file entry
 
-;;;  File types
+;;; File Track/Sector List Format
+kDOS33TSListUnused      = $00   ; Not used
+kDOS33TSListNextTrack   = $01   ; Track number of next T/S List sector (or 0)
+kDOS33TSListNextSector  = $02   ; Sector number of next T/S List sector (or 0)
+kDOS33TSListFirstDataT  = $0C   ; Track of first data sector (or 0)
+kDOS33TSListFirstDataS  = $0D   ; Sector of first data sector
+
+;;; File types
 kDOS33FileTypeText      = $00
 kDOS33FileTypeInteger   = $01
 kDOS33FileTypeApplesoft = $02
@@ -493,7 +500,7 @@ sloop:  lda     num
 
 num:    .byte   0
 
-        .byte   0               ; unused
+        .byte   0               ; unused!
 
 digits_table:
         .byte   1, 10, 100
@@ -503,6 +510,10 @@ digits_table:
 ;;; ============================================================
 ;;; DLOAD Command
 ;;; ============================================================
+
+;;; INPUT_BUFFER is used to hold the filename, length prefixed
+;;; HIMEM points at RWTS buffer for catalog and track/sector list
+;;; HIMEM+$200 is used for file data
 
 .proc DoDLOAD
         ;; Parse command buffer
@@ -644,22 +655,27 @@ found_match:
         ldy     cur_load_sector_offset
         dey
         dey
-        dey                     ; Y = +kDOS33FileEntryTrack
+        dey                     ; Y = +`kDOS33FileEntryTrack`
         lda     (HIMEM),y
         bmi     ErrPathNotFound
         sta     rwts_params_track
-        iny                     ; Y = +kDOS33FileEntrySector
+        iny                     ; Y = +`kDOS33FileEntrySector`
         lda     (HIMEM),y
         sta     rwts_params_sector
 
+        ;; Set up buf for loading track/sector list (HIMEM + $200)
         ldx     rwts_params_data_buf+1
         inx
         inx
         stx     rwts_params_data_buf+1
-        stx     $06+1
+
+        tslist_buf_ptr := $06
+
+        ;; ... and point `tslist_buf_ptr` at it too
+        stx     tslist_buf_ptr+1
         ldx     #$00
-        stx     $06
-        iny                     ; Y = +kDOS33FileTypeFlags
+        stx     tslist_buf_ptr
+        iny                     ; Y = +`kDOS33FileTypeFlags`
 
         ;; Determine file type - Applesoft or binary?
         lda     (HIMEM),y
@@ -684,7 +700,13 @@ load_applesoft:
         bcc     :+
         jmp     ErrIOError
 :
-        ;; Set up data load start location - Applesoft start in memory
+        ;; Set up data load start location - Applesoft start in memory.
+        ;;
+        ;; We don't need to special case loading the first sector because
+        ;; while the first two bytes encode the start address (1) this is
+        ;; ignored and we always load at `(TXTTAB)` and (2) the BASIC
+        ;; program actually starts at two bytes past `(TXTTAB)` anyway.
+
         lda     TXTTAB
         ldy     TXTTAB+1
         sec
@@ -693,43 +715,56 @@ load_applesoft:
         dey
 :       sta     rwts_params_data_buf
         sty     rwts_params_data_buf+1
+
         ldy     #$00
-        sty     L348B
-        iny
-        lda     ($06),y
+        sty     load_type_flag  ; 0 = Applesoft
+        iny                     ; Y = $01 = `kDOS33TSListNextTrack`
+        lda     (tslist_buf_ptr),y
         sta     next_load_track
-        iny
-        lda     ($06),y
+        iny                     ; Y = $02 - `kDOS33TSListNextSector`
+        lda     (tslist_buf_ptr),y
         sta     next_load_sector
-        ldy     #$0C
+        ldy     #$0C            ; Y = $0C - `kDOS33TSListFirstDataT`
         ;; fall through
 
 ;;; --------------------------------------------------
 
-L33FC:  lda     ($06),y
-        beq     finish_load
+        tslist_offset := $02
+
+;;; Read data sectors in Applesoft file. Reads until T/S list entries
+;;; are exhausted, then jumps to `load_next_tslist_sector` which may
+;;; jump back here.
+;;; Enter with Y = offset in Track/Sector List buffer
+load_applesoft_data_sector:
+        ;; Look up next T/S in list
+        lda     (tslist_buf_ptr),y
+        beq     finish_applesoft_load
         sta     rwts_params_track
         iny
-        lda     ($06),y
+        lda     (tslist_buf_ptr),y
         iny
         sta     rwts_params_sector
-        sty     $02
+        sty     tslist_offset
+
+        ;; Load it
         lda     #<rwts_params
         ldy     #>rwts_params
         jsr     DoRWTS
         bcc     :+
         jmp     ErrIOError
 :
-        ldy     $02
-        beq     L3442
+        ldy     tslist_offset
+        beq     load_next_tslist_sector
+
         inc     rwts_params_data_buf+1
         lda     rwts_params_data_buf+1
-        cmp     HIMEM+1
-        bcc     L33FC
-        lda     #$0E
+        cmp     HIMEM+1         ; don't allow loading over buffer
+        bcc     load_applesoft_data_sector
+
+        lda     #BI_ERR_PROGRAM_TOO_LARGE
         rts
 
-finish_load:
+finish_applesoft_load:
         ;; Set up parameters for Applesoft program
         lda     rwts_params_data_buf
         sta     VARTAB
@@ -745,15 +780,23 @@ finish_load:
         clc
         rts
 
-;;; Load next sector into target memory buffer???
-L3442:  lda     rwts_params_data_buf
+;;; --------------------------------------------------
+
+;;; Loads the next Track/Sector List sector. Used by both the
+;;; Applesoft and Binary file loading loops; jumps back to appropriate
+;;; caller using `load_type_flag`.
+
+load_next_tslist_sector:
+        ;; Store current data load pointer
+        lda     rwts_params_data_buf
         sta     stash_data_buf_ptr
         lda     rwts_params_data_buf+1
         sta     stash_data_buf_ptr+1
 
-        lda     $06
+        ;; Load into dedicated buffer
+        lda     tslist_buf_ptr
         sta     rwts_params_data_buf
-        lda     $06+1
+        lda     tslist_buf_ptr+1
         sta     rwts_params_data_buf+1
 
         lda     next_load_track
@@ -767,19 +810,24 @@ L3442:  lda     rwts_params_data_buf
         bcc     :+
         jmp     ErrIOError
 :
+        ;; Restore previous data load pointer
         lda     stash_data_buf_ptr
         sta     rwts_params_data_buf
         lda     stash_data_buf_ptr+1
         sta     rwts_params_data_buf+1
-        ldy     #$0C
-        lda     L348B
-        bne     L3486
-        jmp     L33FC
 
-L3486:  sty     $02
-        jmp     L350E
+        ldy     #kDOS33TSListFirstDataT
+        lda     load_type_flag
+        bne     :+
+        jmp     load_applesoft_data_sector ; expects Y = $0C
+:
+        sty     tslist_offset
+        jmp     load_binary_data_sector ; just uses `tslist_offset`
 
-L348B:  brk
+;;; --------------------------------------------------
+
+;;; $00 if Applesoft, binary otherwise
+load_type_flag:         .byte   0
 
 stash_data_buf_ptr:     .addr   0
 next_load_sector:       .byte   0
@@ -788,28 +836,36 @@ next_load_track:        .byte   0
 ;;; --------------------------------------------------
 
 load_binary:
+        ;; Load first sector of track/sector list
         lda     #<rwts_params
         ldy     #>rwts_params
         jsr     DoRWTS
         bcc     :+
         jmp     ErrIOError
 :
-        ldy     #$01
-        lda     ($06),y
+        ldy     #kDOS33TSListNextTrack
+        lda     (tslist_buf_ptr),y
         sta     next_load_track
-        iny
-        lda     ($06),y
+        iny                     ; Y = $02 - `kDOS33TSListNextSector`
+        lda     (tslist_buf_ptr),y
         sta     next_load_sector
 
-        ldy     #$0C
-        sty     L348B
+        ldy     #kDOS33TSListFirstDataT
+        sty     load_type_flag  ; non-zero = binary
 
-        lda     ($06),y
+        ;; Unlike Applesoft, for Binary file we need to load the
+        ;; first sector and extract the start address (first two
+        ;; bytes) and length (next two bytes).
+
+        lda     (tslist_buf_ptr),y
         sta     rwts_params_track
         iny
-        lda     ($06),y
+        lda     (tslist_buf_ptr),y
         iny
-        sty     $02
+
+        ;; Y points at next T/S list entry
+
+        sty     tslist_offset
         sta     rwts_params_sector
 
         lda     HIMEM+1
@@ -822,56 +878,74 @@ load_binary:
         bcc     :+
         jmp     ErrIOError
 :
-        ldx     VADDR+1
+        ;; First sector loaded; determine load address
+
+        ldx     VADDR+1         ; Use VADDR if passed
         lda     VADDR
         ldy     FBITS+1
-        bmi     :+              ; ADDR passed
-        ldy     #$01
+        bmi     :+              ; A parameter was passed
+        ldy     #$01            ; Not passed, use bytes +$00/+$01
         lda     (HIMEM),y
-        sta     $04
-        dey
+        sta     $04             ; unused!
+        dey                     ; Y = $00
         tax
         lda     (HIMEM),y
-        sta     $03
+        sta     $03             ; unused!
+        ;; A,X = load address
 :
-        cpx     HIMEM+1
-        bcc     L34F0
-        lda     #$0E
+        cpx     HIMEM+1         ; can't load past HIMEM
+        bcc     :+
+        lda     #BI_ERR_PROGRAM_TOO_LARGE
         rts
-
-L34F0:  sec
+:
+        ;; A,X -= 4
+        sec
         sbc     #$04
-        bcs     L34F6
+        bcs     :+
         dex
-L34F6:  sta     $08
-        stx     $09
-        ldy     #$00
-L34FC:  lda     (HIMEM),y
-        sta     ($08),y
+:
+        load_addr_stash = $08
+        sta     load_addr_stash
+        stx     load_addr_stash+1
+
+        ;; Copy first page of data into place (offset by -4)
+        ;; TODO: Does this trash the prior 4 bytes in memory?
+        ldy     #0
+:       lda     (HIMEM),y
+        sta     (load_addr_stash),y
         iny
-        bne     L34FC
-        lda     $08
+        bne     :-
+
+        ;; Target address for next page of data
+        lda     load_addr_stash
         sta     rwts_params_data_buf
-        ldy     $09
+        ldy     load_addr_stash+1
         iny
         sty     rwts_params_data_buf+1
         ;; fall through
 
 ;;; --------------------------------------------------
 
-;;; Read file's next Track/Sector List sector???
-L350E:  ldy     $02
-        bne     L3515
-        jmp     L3442
-
-L3515:  lda     ($06),y
-        beq     L353E
+;;; Read data sectors in binary file. Reads until T/S list entries are
+;;; exhausted, then jumps to `load_next_tslist_sector` which may jump
+;;; back here.
+;;; Enter with `tslist_offset` set correctly.
+load_binary_data_sector:
+        ldy     tslist_offset
+        bne     :+
+        jmp     load_next_tslist_sector
+:
+        ;; Look up next T/S in list
+        lda     (tslist_buf_ptr),y
+        beq     finish_binary_load
         sta     rwts_params_track
         iny
-        lda     ($06),y
+        lda     (tslist_buf_ptr),y
         sta     rwts_params_sector
         iny
-        sty     $02
+        sty     tslist_offset
+
+        ;; Load it
         lda     #<rwts_params
         ldy     #>rwts_params
         jsr     DoRWTS
@@ -881,12 +955,13 @@ L3515:  lda     ($06),y
         inc     rwts_params_data_buf+1
         lda     rwts_params_data_buf+1
         cmp     HIMEM+1
-        bcc     L350E
+        bcc     load_binary_data_sector
 
         lda     #BI_ERR_PROGRAM_TOO_LARGE
         rts
 
-L353E:  clc
+finish_binary_load:
+        clc
         rts
 .endproc
 
@@ -1453,6 +1528,9 @@ explicit_patch3 := DoDSAVE::explicit_patch3
 ;;; +$04 = track
 ;;; +$05 = sector
 ;;; Output: C=0 success, C=1 failure
+
+;;; NOTE: Appears to be hardcoded to use 2 pages at HIMEM despite
+;;; the parameters it is called with.
 
 .proc DoRWTS
         sta     $00
