@@ -279,8 +279,8 @@ DCATImpl:
         ;; Read VTOC
         lda     #RWTSRead
         sta     rwts_params_op
-        lda     #kDOS33VTOCTrack
-        ldy     #kDOS33VTOCSector
+        lda     #dos33::VTOCTrack
+        ldy     #dos33::VTOCSector
         sta     rwts_params_track
         sty     rwts_params_sector
         lda     HIMEM+1
@@ -294,7 +294,7 @@ DCATImpl:
         jmp     ErrIOError
 :
         jsr     CR
-        ldy     #kDOS33VTOCVolumeNumber
+        ldy     #dos33::VTOC::VolumeNumber
         lda     (HIMEM),y
         sta     $02
 
@@ -318,7 +318,7 @@ DCATImpl:
 
         cur_cat_sector_offset = $03
 
-        ldy     #kDOS33DefaultFirstCatalogSector
+        ldy     #dos33::DefaultFirstCatalogSector
         sty     rwts_params_sector
 sector_loop:
         ldy     #>rwts_params
@@ -331,7 +331,7 @@ sector_loop:
         sta     $01
         lda     HIMEM
         sta     $00
-        ldy     #kDOS33FirstFileOffset
+        ldy     #dos33::FirstFileOffset
 
 file_loop:
         sty     cur_cat_sector_offset
@@ -356,13 +356,13 @@ L3217:  lda     #scrchar('*')
         ;; File type
 L321C:  lda     ($00),y
         and     #$7F            ; mask off type
-        .assert kDOS33FileTypeText = 0, error, "mismatch"
+        .assert dos33::FileTypeText = 0, error, "mismatch"
         beq     type_t
-        cmp     #kDOS33FileTypeInteger
+        cmp     #dos33::FileTypeInteger
         beq     type_i
-        cmp     #kDOS33FileTypeApplesoft
+        cmp     #dos33::FileTypeApplesoft
         beq     type_a
-        cmp     #kDOS33FileTypeBinary
+        cmp     #dos33::FileTypeBinary
         beq     type_b
         bne     next_file       ; always
 
@@ -381,7 +381,7 @@ type_b: lda     #scrchar('B')
         ;; Sectors
         lda     cur_cat_sector_offset
         clc
-        adc     #kDOS33FileEntryLength
+        adc     #dos33::FileEntry::Length
         tay
         lda     ($00),y
         jsr     PrintByte
@@ -399,7 +399,7 @@ L325D:  lda     ($00),y
         jsr     COUT
         iny
         inx
-        cpx     #kDOS33MaxFilenameLen-1
+        cpx     #dos33::MaxFilenameLen-1
         bne     L325D
 
         jsr     CR
@@ -417,7 +417,7 @@ L3275:  lda     KBD
 next_file:
         lda     cur_cat_sector_offset
         clc
-        adc     #kDOS33FileEntrySize
+        adc     #.sizeof(dos33::FileEntry)
         tay
         bcs     next_sector
         jmp     file_loop
@@ -512,9 +512,9 @@ fail:   sec
 done_name:
 
         ;; Truncate name if too long
-        cpx     #kDOS33MaxFilenameLen+1
+        cpx     #dos33::MaxFilenameLen+1
         bcc     :+
-        ldx     #kDOS33MaxFilenameLen
+        ldx     #dos33::MaxFilenameLen
         ;; Prefix buffer with name length
 :       stx     INPUT_BUFFER
         dey
@@ -556,9 +556,9 @@ DLOADImpl:
         sta     rwts_params_data_buf+1
         lda     #$00
         sta     rwts_params_data_buf
-        lda     #kDOS33VTOCTrack
+        lda     #dos33::VTOCTrack
         sta     rwts_params_track
-        lda     #kDOS33DefaultFirstCatalogSector
+        lda     #dos33::DefaultFirstCatalogSector
         sta     rwts_params_sector
 
 catalog_sector_loop:
@@ -568,7 +568,7 @@ catalog_sector_loop:
         bcc     :+
         jmp     ErrIOError
 :
-        lda     #kDOS33FirstFileOffset + kDOS33FileEntryName
+        lda     #dos33::FirstFileOffset + dos33::FileEntry::Name
         ;; Check for filename match
 entry_loop:
         tay
@@ -590,7 +590,7 @@ cloop:  lda     (HIMEM),y
 next_entry:
         lda     cur_load_sector_offset
         clc
-        adc     #kDOS33FileEntrySize
+        adc     #.sizeof(dos33::FileEntry)
         bcc     entry_loop
 
         ;; Next catalog sector
@@ -606,7 +606,7 @@ ErrPathNotFound:
         rts
 
 possible_match:
-        cpx     #kDOS33MaxFilenameLen
+        cpx     #dos33::MaxFilenameLen
         beq     found_match
         iny
         lda     (HIMEM),y
@@ -623,11 +623,11 @@ found_match:
         ldy     cur_load_sector_offset
         dey
         dey
-        dey                     ; Y = +`kDOS33FileEntryTrack`
+        dey                     ; Y = +`dos33::FileEntry::Track`
         lda     (HIMEM),y
         bmi     ErrPathNotFound
         sta     rwts_params_track
-        iny                     ; Y = +`kDOS33FileEntrySector`
+        iny                     ; Y = +`dos33::FileEntry::Sector`
         lda     (HIMEM),y
         sta     rwts_params_sector
 
@@ -643,14 +643,14 @@ found_match:
         stx     tslist_buf_ptr+1
         ldx     #$00
         stx     tslist_buf_ptr
-        iny                     ; Y = +`kDOS33FileTypeFlags`
+        iny                     ; Y = +`dos33::FileTypeFlags`
 
         ;; Determine file type - Applesoft or binary?
         lda     (HIMEM),y
         and     #$7F            ; mask off Locked bit
-        cmp     #kDOS33FileTypeApplesoft
+        cmp     #dos33::FileTypeApplesoft
         beq     load_applesoft
-        cmp     #kDOS33FileTypeBinary
+        cmp     #dos33::FileTypeBinary
         bne     :+
         jmp     load_binary
 :
@@ -687,13 +687,13 @@ load_applesoft:
 
         ldy     #$00
         sty     load_type_flag  ; 0 = Applesoft
-        iny                     ; Y = $01 = `kDOS33TSListNextTrack`
+        iny                     ; Y = $01 = `dos33::TSList::NextTrack`
         lda     (tslist_buf_ptr),y
         sta     next_load_track
-        iny                     ; Y = $02 - `kDOS33TSListNextSector`
+        iny                     ; Y = $02 - `dos33::TSList::NextSector`
         lda     (tslist_buf_ptr),y
         sta     next_load_sector
-        ldy     #$0C            ; Y = $0C - `kDOS33TSListFirstDataT`
+        ldy     #$0C            ; Y = $0C - `dos33::TSList::FirstDataT`
         ;; fall through
 
 ;;; --------------------------------------------------
@@ -785,7 +785,7 @@ load_next_tslist_sector:
         lda     stash_data_buf_ptr+1
         sta     rwts_params_data_buf+1
 
-        ldy     #kDOS33TSListFirstDataT
+        ldy     #dos33::TSList::FirstDataT
         lda     load_type_flag
         bne     :+
         jmp     load_applesoft_data_sector ; expects Y = $0C
@@ -812,14 +812,14 @@ load_binary:
         bcc     :+
         jmp     ErrIOError
 :
-        ldy     #kDOS33TSListNextTrack
+        ldy     #dos33::TSList::NextTrack
         lda     (tslist_buf_ptr),y
         sta     next_load_track
-        iny                     ; Y = $02 - `kDOS33TSListNextSector`
+        iny                     ; Y = $02 - `dos33::TSList::NextSector`
         lda     (tslist_buf_ptr),y
         sta     next_load_sector
 
-        ldy     #kDOS33TSListFirstDataT
+        ldy     #dos33::TSList::FirstDataT
         sty     load_type_flag  ; non-zero = binary
 
         ;; Unlike Applesoft, for Binary file we need to load the
@@ -983,9 +983,9 @@ DSAVEImpl:
         rts
 :
         ;; Truncate name if too long
-        cpx     #kDOS33MaxFilenameLen+1
+        cpx     #dos33::MaxFilenameLen+1
         bcc     :+
-        lda     #kDOS33MaxFilenameLen
+        lda     #dos33::MaxFilenameLen
         sta     INPUT_BUFFER
 :
         ;; Compute unit_num
@@ -1062,7 +1062,7 @@ common2:
         sta     vtoc_buf_ptr
         sta     rwts_params_data_buf
         sta     rwts_params_sector
-        lda     #kDOS33VTOCTrack
+        lda     #dos33::VTOCTrack
         sta     rwts_params_track
         ldy     #>rwts_params
         lda     #<rwts_params
@@ -1073,13 +1073,13 @@ common2:
         ;; Does this look like a DOS 3.3 disk?
         ldy     #$01      ; +$01 = Track number of first catalog track
         lda     (vtoc_buf_ptr),y
-        cmp     #kDOS33VTOCTrack
+        cmp     #dos33::VTOCTrack
         beq     :+
 io_err: jmp     ErrIOError
 :
         iny                     ; +$02 = Sector number of first catalog track
         lda     (vtoc_buf_ptr),y
-        cmp     #kDOS33DefaultFirstCatalogSector
+        cmp     #dos33::DefaultFirstCatalogSector
         bne     io_err
 
         ;; See if there is an existing file (i.e. overwrite)
@@ -1098,13 +1098,13 @@ io_err: jmp     ErrIOError
         iny
         bne     :-
 
-        ldy     #kDOS33TSListFirstDataT
+        ldy     #dos33::TSList::FirstDataT
         sty     $08
 
         ;; --------------------------------------------------
 
         ;; Start at end of bitmap, work down, checking for a free sector
-        ldy     #kDOS33VTOCBitMapTrack34+1
+        ldy     #dos33::VTOC::BitMapTrack34+1
 bitmap_entry_loop:
         lda     (vtoc_buf_ptr),y
         beq     next_bitmap_entry ; all 0 = all in use
@@ -1122,7 +1122,7 @@ bitmap_even:
         sta     bitmap_sector_offset
 :       tya
         sec                     ; track number = (offset - bitmap) / 4
-        sbc     #kDOS33VTOCBitMap
+        sbc     #dos33::VTOC::BitMap
         and     #$FE            ; %= 2
         lsr     a               ; (but this LSR would discard it anyway!)
         lsr     a               ; /= 4
@@ -1145,7 +1145,7 @@ bitmap_even:
         adc     bitmap_sector_offset ; 0 or 8
         sta     bitmap_sector_offset ; now the sector num
 
-        ldy     $08             ; Y = `kDOS33TSListFirstDataT`
+        ldy     $08             ; Y = `dos33::TSList::FirstDataT`
         lda     file_track      ; was there a previous track?
         bne     reuse
         lda     old_file_track  ; found free track
@@ -1158,7 +1158,7 @@ bitmap_even:
 
 reuse:  lda     old_file_track
         sta     (HIMEM),y
-        iny                     ; Y = `kDOS33TSListFirstDataS`
+        iny                     ; Y = `dos33::TSList::FirstDataS`
         lda     bitmap_sector_offset
         sta     (HIMEM),y
         iny
@@ -1194,7 +1194,7 @@ update_bitmap:
 next_bitmap_entry:
         dey
         explicit_patch3 := *+1  ; relocation patch
-        cpy     #kDOS33VTOCBitMap - 1 ; (=$37, so a false positive)
+        cpy     #dos33::VTOC::BitMap - 1 ; (=$37, so a false positive)
         bne     bitmap_entry_loop
 
         ;; No free sectors
@@ -1225,7 +1225,7 @@ done_allocating_sectors:
         ;; Write out the updated VTOC sector
         lda     #RWTSWrite
         sta     rwts_params_op
-        lda     #kDOS33VTOCTrack
+        lda     #dos33::VTOCTrack
         sta     rwts_params_track
         lda     #$00
         sta     rwts_params_sector
@@ -1254,9 +1254,9 @@ L36E8:  jmp     ErrIOError
         cat_data_buf := $06
 
         ;; Find a free space in the catalog
-        lda     #kDOS33VTOCTrack
+        lda     #dos33::VTOCTrack
         sta     rwts_params_track
-        lda     #kDOS33DefaultFirstCatalogSector
+        lda     #dos33::DefaultFirstCatalogSector
         sta     rwts_params_sector
 cat_sector_loop:
         ldy     #>rwts_params
@@ -1265,7 +1265,7 @@ cat_sector_loop:
         bcc     :+
         jmp     ErrIOError
 :
-        lda     #kDOS33FirstFileOffset
+        lda     #dos33::FirstFileOffset
 cat_entry_loop:
         tay
         lda     ($06),y
@@ -1273,7 +1273,7 @@ cat_entry_loop:
         bmi     :+              ; $FF = entry deleted (so free)
         tya
         clc
-        adc     #kDOS33FileEntrySize
+        adc     #.sizeof(dos33::FileEntry)
         bcc     cat_entry_loop
         dec     rwts_params_sector
         bne     cat_sector_loop
@@ -1286,22 +1286,22 @@ cat_entry_loop:
 
         lda     file_track
         sta     (cat_data_buf),y
-        iny                     ; Y = `kDOS33FileEntrySector`
+        iny                     ; Y = `dos33::FileEntry::Sector`
         lda     file_sector
         sta     (cat_data_buf),y
-        iny                     ; Y = `kDOS33FileEntryTypeFlags`
+        iny                     ; Y = `dos33::FileEntry::TypeFlags`
         ldx     FBITS+1
         bpl     :+              ; ADDR not passed, so Applesoft
-        lda     #kDOS33FileTypeBinary
+        lda     #dos33::FileTypeBinary
         bne     set_type           ; always
 :
-        lda     #kDOS33FileTypeApplesoft
+        lda     #dos33::FileTypeApplesoft
 
 set_type:
         sta     (cat_data_buf),y
 
         ;; Write out filename
-        iny                     ; Y = `kDOS33FileEntryName`
+        iny                     ; Y = `dos33::FileEntry::Name`
         ldx     #0
 :       lda     INPUT_BUFFER+1,x
         sta     (cat_data_buf),y
@@ -1311,7 +1311,7 @@ set_type:
         bne     :-
 
         ;; Pad entry with spaces
-:       cpx     #kDOS33MaxFilenameLen
+:       cpx     #dos33::MaxFilenameLen
         beq     :+
         lda     #scrchar(' ')
         sta     (cat_data_buf),y
@@ -1319,7 +1319,7 @@ set_type:
         iny
         bne     :-
 :
-        ;; Y = `kDOS33FileEntryLength`
+        ;; Y = `dos33::FileEntry::Length`
         lda     file_num_sectors
         sta     (cat_data_buf),y
         iny
@@ -1383,7 +1383,7 @@ prep_common_header:
         track_sector_list_ptr := $06
 
         ;; Use track/sector list data as a guide to write out file data sectors
-        ldy     #kDOS33TSListFirstDataT
+        ldy     #dos33::TSList::FirstDataT
 L37C6:  lda     file_data_ptr
         sta     rwts_params_data_buf
         lda     file_data_ptr+1
@@ -1434,9 +1434,9 @@ delete_previous_catalog_entry:
         sta     rwts_params_data_buf
         sta     cat_sector_ptr
 
-        lda     #kDOS33VTOCTrack
+        lda     #dos33::VTOCTrack
         sta     rwts_params_track
-        lda     #kDOS33DefaultFirstCatalogSector
+        lda     #dos33::DefaultFirstCatalogSector
         sta     rwts_params_sector
 
 catalog_sector_loop:
@@ -1446,13 +1446,13 @@ catalog_sector_loop:
         bcc     :+
         jmp     ErrIOError
 :
-        ldy     #kDOS33NextCatSectorTrack
+        ldy     #dos33::NextCatSectorTrack
         lda     (cat_sector_ptr),y
-        cmp     #kDOS33VTOCTrack
+        cmp     #dos33::VTOCTrack
         beq     :+
         jmp     ErrIOError
 :
-        lda     #kDOS33FirstFileOffset + kDOS33FileEntryName
+        lda     #dos33::FirstFileOffset + dos33::FileEntry::Name
         ;; Check for filename match
 
 entry_loop:
@@ -1472,7 +1472,7 @@ cloop:  lda     (cat_sector_ptr),y
         bne     cloop
 
 possible_match:
-        cpx     #kDOS33MaxFilenameLen
+        cpx     #dos33::MaxFilenameLen
         beq     found_match
         lda     (cat_sector_ptr),y
         inx
@@ -1483,7 +1483,7 @@ possible_match:
 next_entry:
         pla                     ; A = current offset in sector
         clc
-        adc     #kDOS33FileEntrySize
+        adc     #.sizeof(dos33::FileEntry)
         bcc     entry_loop
 
         ;; Next catalog sector
@@ -1498,12 +1498,12 @@ next_entry:
 found_match:
         pla
         tay
-        dey                     ; Y = +`kDOS33FileEntryTypeFlags`
+        dey                     ; Y = +`dos33::FileEntry::TypeFlags`
         lda     (cat_sector_ptr),y
         bmi     ErrFileLocked   ; high bit set if locked
-        cmp     #kDOS33FileTypeBinary
+        cmp     #dos33::FileTypeBinary
         beq     check_binary
-        cmp     #kDOS33FileTypeApplesoft
+        cmp     #dos33::FileTypeApplesoft
         bne     ErrFileTypeMismatch
 
         ;; Existing file is Applesoft - is that what we're DSAVEing?
@@ -1524,7 +1524,7 @@ ErrFileLocked:
 bad_entry:
         iny
         iny
-        iny                     ; Y = +`kDOS33FileEntryName`
+        iny                     ; Y = +`dos33::FileEntry::Name`
         tya
         pha
         bne     next_entry      ; always
@@ -1536,11 +1536,11 @@ check_binary:
 
 overwrite_type_okay:
         dey
-        dey                     ; Y = +`kDOS33FileEntryTrack`
+        dey                     ; Y = +`dos33::FileEntry::Track`
         tya
         pha
         clc
-        adc     #kDOS33FileEntryLength
+        adc     #dos33::FileEntry::Length
         tay
         lda     (cat_sector_ptr),y
         cmp     #$7B            ; can't save(?) programs > 122 sectors
@@ -1551,13 +1551,13 @@ overwrite_type_okay:
         rts
 :
         pla
-        tay                     ; Y = +`kDOS33FileEntryTrack`
+        tay                     ; Y = +`dos33::FileEntry::Track`
         lda     (cat_sector_ptr),y
         bmi     bad_entry       ; $FF = already deleted entry
         sta     old_file_track
         lda     #$FF            ; Mark entry as deleted
         sta     (cat_sector_ptr),y
-        iny                     ; Y = +`kDOS33FileEntrySector`
+        iny                     ; Y = +`dos33::FileEntry::Sector`
         lda     (cat_sector_ptr),y
         sta     old_file_sector
 
@@ -1585,7 +1585,7 @@ overwrite_type_okay:
         ;; Iterate over T/S list, mark sectors free in VTOC
         explicit_patch1 := *+2  ; relocation patch
         jsr     mark_free_in_vtoc
-        ldy     #kDOS33TSListFirstDataT
+        ldy     #dos33::TSList::FirstDataT
 sloop:
         lda     (cat_sector_ptr),y
         beq     :+
@@ -1609,7 +1609,7 @@ sloop:
         asl     a
         asl     a               ; *= 4
         clc
-        adc     #kDOS33VTOCBitMap
+        adc     #dos33::VTOC::BitMap
         tay                     ; Y = VTOC bitmap offset for track
 
         ;; Byte   Sectors
