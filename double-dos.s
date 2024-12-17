@@ -42,6 +42,9 @@ kDOS33VTOCFirstCatTrack = $01   ; +$01 Track number of first catalog sector (usu
 kDOS33VTOCFirstCatSector= $02   ; +$02 Secto number of first catalog sector (usually $F)
 kDOS33VTOCVolumeNumber  = $06   ; +$06 Diskette volume number (1-254)
 kDOS33VTOCBitMap        = $38   ; +$38 Bit map of free sectors (4 bytes per track)
+kDOS33VTOCBitMapTrack0  = $38   ; +$38...$3B for track 0
+kDOS33VTOCBitMapTrack1  = $3C   ; +$3C...$3F for track 1 ...
+kDOS33VTOCBitMapTrack34 = $C0   ; +$C0...$C3 for track 34
 
 ;;; Catalog Sector Format
 kDOS33NextCatSectorTrack= $01   ; Track number of next catalog sector (usually $11)
@@ -102,12 +105,12 @@ kDOS33FileTypeB         = $40
 
          ;; Build up target page table for source pages $31...$37
         tax                     ; X = high byte of buffer
-        ldy     #$00
+        ldy     #0
 :       txa
         sta     reloc_target_page_table,y
         inx
         iny
-        cpy     #$07            ; pages to relocate???
+        cpy     #7
         bcc     :-
         ;; X = target page for page $38
 
@@ -378,7 +381,7 @@ file_loop:
         sty     cur_cat_sector_offset
         lda     ($00),y         ; +$00 "Track of first track/sector list sector"
         bne     L3205           ; $00 = entry is free
-        jmp     L3292
+        jmp     exit_success
 
 L3205:  cmp     #$FF            ; $FF = entry is deleted
         beq     next_file
@@ -470,10 +473,11 @@ next_file:
 
 next_sector:
         dec     rwts_params_sector
-        beq     L3292
+        beq     exit_success
         jmp     sector_loop
 
-L3292:  jsr     CR
+exit_success:
+        jsr     CR
         jsr     CR
         clc
         lda     #$00
@@ -691,10 +695,10 @@ found_match:
         cmp     #kDOS33FileTypeApplesoft
         beq     load_applesoft
         cmp     #kDOS33FileTypeBinary
-        bne     L33C9
+        bne     :+
         jmp     load_binary
-
-L33C9:  sec
+:
+        sec
         lda     #$0D
         rts
 
@@ -1062,9 +1066,9 @@ prep_basic:
         lda     PRGEND
         sec
         sbc     TXTTAB
-        bcs     L35CD
+        bcs     :+
         dex
-L35CD:  stx     VLNTH+1
+:       stx     VLNTH+1
         sta     VLNTH
         clc
         adc     #$02            ; first two bytes are length
@@ -1125,106 +1129,144 @@ io_err: jmp     ErrIOError
         ;; See if there is an existing file (i.e. overwrite)
         jsr     delete_previous_catalog_entry
         bcc     :+              ; succcss
-        rts
+        rts                     ; failure
 :
-        ;; ???
+        ;; Prepare file's Track/Sector list
         inc     HIMEM+1
         inc     HIMEM+1
         ldx     file_num_sectors
-        ldy     #$00
+
+        ldy     #0
         tya
-L3634:  sta     (HIMEM),y
+:       sta     (HIMEM),y
         iny
-        bne     L3634
-        ldy     #$0C
+        bne     :-
+
+        ldy     #kDOS33TSListFirstDataT
         sty     $08
 
-        ldy     #$C1
-L363F:  lda     ($06),y
-        beq     L36B5
+        ;; --------------------------------------------------
+
+        ;; Start at end of bitmap, work down, checking for a free sector
+        ldy     #kDOS33VTOCBitMapTrack34+1
+bitmap_entry_loop:
+        lda     (vtoc_buf_ptr),y
+        beq     next_bitmap_entry ; all 0 = all in use
+
+        ;; Found one! Identify the track number
         tya
-        and     #$01
-        beq     L364F
-        lda     #$00
-        sta     L36C6
-        beq     L3654
-L364F:  lda     #$08
-        sta     L36C6
-L3654:  tya
-        sec
-        sbc     #kDOS33VTOCBitMap ; ???
-        and     #$FE
-        lsr     a               ; /= 2
-        lsr     a
+        and     #1              ; sectors 8-F in even bytes
+        beq     bitmap_even
+
+        lda     #0              ; sectors 0-7 in odd bytes
+        sta     bitmap_sector_offset
+        beq     :+
+bitmap_even:
+        lda     #8
+        sta     bitmap_sector_offset
+:       tya
+        sec                     ; track number = (offset - bitmap) / 4
+        sbc     #kDOS33VTOCBitMap
+        and     #$FE            ; %= 2
+        lsr     a               ; (but this LSR would discard it anyway!)
+        lsr     a               ; /= 4
         sta     old_file_track
-        lda     ($06),y
-        pha
-        sty     $09
-        ldy     #$07
-L3666:  rol     a
-        bcs     L366C
+        lda     (vtoc_buf_ptr),y
+        pha                     ; A = bitmap byte
+
+        bitmap_byte_offset := $09
+        sty     bitmap_byte_offset
+
+        ;; Identify the sector number
+        ldy     #7              ; bits 0...7
+:       rol     a
+        bcs     :+              ; a 1 bit means sector is free
         dey
-        bpl     L3666
-L366C:  tya
+        bpl     :-
+:
+        tya                     ; A = bit number
         clc
-        adc     L36C6
-        sta     L36C6
-        ldy     $08
-        lda     file_track
-        bne     L368A
-        lda     old_file_track
+        adc     bitmap_sector_offset ; 0 or 8
+        sta     bitmap_sector_offset ; now the sector num
+
+        ldy     $08             ; Y = `kDOS33TSListFirstDataT`
+        lda     file_track      ; was there a previous track?
+        bne     reuse
+        lda     old_file_track  ; found free track
         sta     file_track
-        lda     L36C6
+        lda     bitmap_sector_offset ; found free sector
         sta     file_sector
-        pla
-        bne     L3699
-L368A:  lda     old_file_track
+
+        pla                     ; A = bitmap byte
+        bne     update_bitmap   ; always (or we would have skipped it)
+
+reuse:  lda     old_file_track
         sta     (HIMEM),y
-        iny
-        lda     L36C6
+        iny                     ; Y = `kDOS33TSListFirstDataS`
+        lda     bitmap_sector_offset
         sta     (HIMEM),y
         iny
         sty     $08
         pla
-L3699:  ldy     #$08
-L369B:  rol     a
-        bcs     L36A1
+
+        ;; Update bitmap byte (in A)
+update_bitmap:
+        ;; Search (again) for a "1" bit
+        ldy     #8
+:       rol     a
+        bcs     :+
         dey
-        bne     L369B
-L36A1:  clc
-L36A2:  ror     a
-        cpy     #$08
-        beq     L36AA
+        bne     :-
+:
+        ;; Replace it with a "0" bit
+        clc
+:       ror     a
+        cpy     #8
+        beq     :+
         iny
-        bne     L36A2
-L36AA:  ldy     $09
-        sta     ($06),y
-        dex
-        beq     L36C7
-        cmp     #$00
-        bne     L363F
-L36B5:  dey
+        bne     :-
+:
+        ;; Write it into place
+        ldy     bitmap_byte_offset
+        sta     (vtoc_buf_ptr),y
+
+        dex                     ; X = num file sectors
+        beq     done_allocating_sectors
+        cmp     #0
+        bne     bitmap_entry_loop ; more free in this one!
+
+next_bitmap_entry:
+        dey
         explicit_patch3 := *+1  ; relocation patch
-        cpy     #$37            ; (false positive)
-        bne     L363F
+        cpy     #kDOS33VTOCBitMap - 1 ; (=$37, so a false positive)
+        bne     bitmap_entry_loop
+
+        ;; No free sectors
         dec     HIMEM+1
         dec     HIMEM+1
         lda     #BI_ERR_DISK_FULL
         sec
         rts
 
+        ;; --------------------------------------------------
+
 file_track:     .byte   0
 file_sector:    .byte   0
 
-;;; Set if overwriting (only???)
+;;; Set if overwriting (can re-use track/sector list sector)
 old_file_track: .byte   0
 old_file_sector:.byte   0
 
-L36C6:  brk
+bitmap_sector_offset:
+        .byte   0
 
-        ;; ???
-L36C7:  dec     HIMEM+1
+        ;; --------------------------------------------------
+
+done_allocating_sectors:
         dec     HIMEM+1
+        dec     HIMEM+1
+
+        ;; Write out the updated VTOC sector
         lda     #RWTSWrite
         sta     rwts_params_op
         lda     #kDOS33VTOCTrack
@@ -1239,6 +1281,7 @@ L36C7:  dec     HIMEM+1
         bcc     :+
 L36E8:  jmp     ErrIOError
 :
+        ;; Write out the file Track/Sector List sector
         lda     file_track
         sta     rwts_params_track
         lda     file_sector
@@ -1251,6 +1294,8 @@ L36E8:  jmp     ErrIOError
         dec     rwts_params_op  ; Write -> Read
         lda     $07
         sta     rwts_params_data_buf+1
+
+        cat_data_buf := $06
 
         ;; Find a free space in the catalog
         lda     #kDOS33VTOCTrack
@@ -1284,10 +1329,10 @@ cat_entry_loop:
         ;; Found free entry; Y = offset in current catalog sector (file track)
 
         lda     file_track
-        sta     ($06),y
+        sta     (cat_data_buf),y
         iny                     ; Y = `kDOS33FileEntrySector`
         lda     file_sector
-        sta     ($06),y
+        sta     (cat_data_buf),y
         iny                     ; Y = `kDOS33FileEntryTypeFlags`
         ldx     FBITS+1
         bpl     :+              ; ADDR not passed, so Applesoft
@@ -1297,13 +1342,13 @@ cat_entry_loop:
         lda     #kDOS33FileTypeApplesoft
 
 set_type:
-        sta     ($06),y
+        sta     (cat_data_buf),y
 
         ;; Write out filename
         iny                     ; Y = `kDOS33FileEntryName`
         ldx     #0
 :       lda     INPUT_BUFFER+1,x
-        sta     ($06),y
+        sta     (cat_data_buf),y
         iny
         inx
         cpx     INPUT_BUFFER
@@ -1313,17 +1358,17 @@ set_type:
 :       cpx     #kDOS33MaxFilenameLen
         beq     :+
         lda     #scrchar(' ')
-        sta     ($06),y
+        sta     (cat_data_buf),y
         inx
         iny
         bne     :-
 :
         ;; Y = `kDOS33FileEntryLength`
         lda     file_num_sectors
-        sta     ($06),y
+        sta     (cat_data_buf),y
         iny
         lda     #$00            ; hi byte; always 0
-        sta     ($06),y
+        sta     (cat_data_buf),y
 
         ;; Write out the catalog sector
         lda     #RWTSWrite
@@ -1337,6 +1382,8 @@ set_type:
         ;; --------------------------------------------------
         ;; Prepare file data header
 
+        file_data_ptr := $08
+
         dec     $07
         ldx     FBITS+1
         bpl     prep_applesoft_header ; ADDR not passed, so Applesoft
@@ -1349,8 +1396,8 @@ set_type:
         sbc     #4
         bcs     :+
         dex                     ; A,X = VADDR-4
-:       sta     $08
-        stx     $09
+:       sta     file_data_ptr
+        stx     file_data_ptr+1
         ldy     #$00
         lda     VADDR
         sta     ($08),y
@@ -1362,46 +1409,51 @@ set_type:
 
 prep_applesoft_header:
         lda     #<$07FF         ; Uses $801 - 2 = $7FF
-        sta     $08             ; TODO: Should use `TXTTAB` instead
+        sta     file_data_ptr
         lda     #>$07FF
-        sta     $09
+        sta     file_data_ptr+1
         ldy     #$00
 
 prep_common_header:
-        ;; $08/$09 = start address (including header), and Y = offset
-        ;; to length word.
+        ;; Now `file_data_ptr` is set, and Y = offset to length word.
         lda     VLNTH
-        sta     ($08),y
+        sta     (file_data_ptr),y
         iny
         lda     VLNTH+1
-        sta     ($08),y
+        sta     (file_data_ptr),y
 
         ;; --------------------------------------------------
 
-        ;; Prepare File Track/Sector List data ???
-        ldy     #$0C            ; `kDOS33TSListFirstDataT` ???
-L37C6:  lda     $08
+        track_sector_list_ptr := $06
+
+        ;; Use track/sector list data as a guide to write out file data sectors
+        ldy     #kDOS33TSListFirstDataT
+L37C6:  lda     file_data_ptr
         sta     rwts_params_data_buf
-        lda     $09
+        lda     file_data_ptr+1
         sta     rwts_params_data_buf+1
-        lda     ($06),y
-        beq     L37F4
+
+        lda     (track_sector_list_ptr),y
+        beq     done_writing
         iny
         sta     rwts_params_track
-        lda     ($06),y
+        lda     (track_sector_list_ptr),y
         sta     rwts_params_sector
         iny
-        sty     file_num_sectors
+        sty     file_num_sectors ; used as temp storage
         lda     #<rwts_params
         ldy     #>rwts_params
         jsr     DoRWTS
         bcc     :+
         jmp     ErrIOError
 :
-        inc     $09
-        ldy     file_num_sectors
+        inc     file_data_ptr+1
+        ldy     file_num_sectors ; from temp storage
         bne     L37C6
-L37F4:  lda     #$00
+
+done_writing:
+        ;; In case of Applesoft, restore needed null byte
+        lda     #$00
         sta     $0800
         clc
         rts
